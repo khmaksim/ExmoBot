@@ -1,79 +1,125 @@
-import sys
-import http.client
-import urllib
-import json
-import hashlib
-import hmac
 import time
+import logging
+import decimal
 
-secret_key = 'S-f5fb1840951f16f40737d4e01f4b8975a51e1124'
-public_key = 'K-f76caad05d749c91d2e3ec89020cbef7443c9ebd'
+class Bot:
+	def __init__(self, token, currency_buy, currency_sell):
+		self.token = token
+		self.pair = '{0}_{1}'.format(currency_buy, currency_sell)
+		self.currency_sell = currency_sell
+		self.currency_buy = currency_buy
+		self.balances = {}
+		self.profit = 0.1 / 100
+		self.logger = logging.getLogger('Bot')
 
-class ExmoAPI:
-    def __init__(self, API_KEY, API_SECRET, API_URL = 'api.exmo.com', API_VERSION = 'v1'):
-        self.API_URL = API_URL
-        self.API_VERSION = API_VERSION
-        self.API_KEY = API_KEY
-        self.API_SECRET = bytes(API_SECRET, encoding='utf-8')
+	def trade(self):
+		order_life_time = 3
+		open_orders = self.token.api_query('user_open_orders')
+		orders_pair = open_orders.get(self.pair)
 
-    def sha512(self, data):
-        H = hmac.new(key = self.API_SECRET, digestmod = hashlib.sha512)
-        H.update(data.encode('utf-8'))
-        return H.hexdigest()
+		if orders_pair == None:
+			print(u'Открытых ордеров нет')
+			self.logger.info(u'Открытых ордеров нет')
+			self.update_balance()
 
-    def api_query(self, api_method, params = {}):
-        params['nonce'] = int(round(time.time() * 1000))
-        params =  urllib.parse.urlencode(params)
+			pair_list = self.token.api_query('pair_settings')
+			
+			if pair_list[self.pair] != None:
+				cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))
+				commission_maker_percent = float(pair_list[self.pair].get('commission_maker_percent')) / 100
 
-        sign = self.sha512(params)
-        headers = {
-            "Content-type": "application/x-www-form-urlencoded",
-            "Key": self.API_KEY,
-            "Sign": sign
-        }
-        conn = http.client.HTTPSConnection(self.API_URL)
-        conn.request("POST", "/" + self.API_VERSION + "/" + api_method, params, headers)
-        response = conn.getresponse().read()
+				if float(self.balances[self.currency_buy]) >= cur_min_quantity:
+					avg_price = self.avg_price_period(self.pair, 3)
+					wanna_get = avg_price + avg_price * (commission_maker_percent + self.profit)
 
-        conn.close()
+					if wanna_get != 0:
+						# amount_currency = wanna_get / float(self.balances[self.currency_buy])
+						self.create_order(float(self.balances[self.currency_buy]), wanna_get, 'sell')
 
-        try:
-            obj = json.loads(response.decode('utf-8'))
-            if 'error' in obj and obj['error']:
-                print(obj['error'])
-                raise sys.exit()
-            return obj
-        except json.decoder.JSONDecodeError:
-            print('Error while parsing response:', response)
-            raise sys.exit()
+				if float(self.balances[self.currency_sell]) >= 0:
+					avg_price = self.avg_price_period(self.pair, 3)
+					need_price = avg_price - avg_price * (commission_maker_percent + self.profit)
+					
+					if need_price != 0:
+						amount_currency = float(self.balances[self.currency_sell]) / need_price
+					
+						if amount_currency > cur_min_quantity:
+							self.create_order(amount_currency, need_price, 'buy')
+		else:
+			orders_buy = []		# Список орденов на покупку	
+
+			for order in orders_pair:
+				if order.get('type') == 'sell':
+					continue
+				elif order.get('type') == 'buy':
+					orders_buy.append(order)
+
+			for order_buy in orders_buy:
+				print(orders_buy)
+				id_order = order_buy.get('order_id')
+				
+				if id_order == None:
+					continue
+
+				res = self.token.api_query('order_trades', {'order_id': id_order})
+
+				time_passed = time.time() - order_buy.get('created')
+				if time_passed > order_life_time * 60:
+					cancel_order(id_order)
+
+	def create_order(self, amount, price, type_order):
+		# Округление до 2-х знаков после запятой (ограничение EXMO)
+		decimal_price = decimal.Decimal(str(price)).quantize(decimal.Decimal('.01'), rounding=decimal.ROUND_DOWN)
+		price = float(decimal_price)
+
+		res = self.token.api_query('order_create', {'pair': self.pair, 
+											'quantity': amount,
+    										'price': price,
+    										'type': type_order})
+		if res.get('result') == True:
+			if type_order == 'buy':
+				self.logger.info(u'Создан ордер #{0} на покупку'.format(res.get('order_id')))
+			else:
+				self.logger.info(u'Создан ордер #{0} на продажу'.format(res.get('order_id')))
+
+			print(u'Создан ордер #{0}'.format(res.get('order_id')))
+
+	def cancel_order(self, id_order):
+		res = self.token.api_query('order_cancel', {'order_id': id_order})
+
+		if res.get('result') == True:
+			self.logger.info(u'Отменен ордер #{0}'.format(id_order))				
+			print(u'Отменен ордер #{0}'.format(id_order))
+
+	def update_balance(self):
+		user_info = self.token.api_query('user_info')
+		
+		for k, v in user_info['balances'].items():
+			self.balances[k] = v
+			if v != '0':
+				print('{0} [{1}]'.format(k, v))
+
+	def avg_price_period(self, pair=None, period=1):
+		if pair == None:
+			pair = self.pair
+
+		trades = self.token.api_query('trades', {'pair': pair})
+		sum_trade = 0
+		n = 0
+
+		for trade in trades[pair]:
+			time_passed = time.time() - trade.get('date')
+			
+			if time_passed < (period * 60):
+				sum_trade += float(trade.get('price'))
+				n += 1
+
+		if n == 0:
+			n = 1
+		
+		return (sum_trade / n)		
 
 
-ExmoAPI_instance = ExmoAPI(public_key, secret_key)
-user_info = ExmoAPI_instance.api_query('user_info')
-user_uid = user_info['uid']
-server_date = user_info['server_date']
-
-# print(ExmoAPI_instance.api_query('currency'))
-pair_list = ExmoAPI_instance.api_query('pair_settings')
-
-# for pair in pair_list:
-#     print(pair)
-
-ticker = ExmoAPI_instance.api_query('ticker')
-print(ticker)
 
 
 
-
-# print(ExmoAPI_instance.api_query('order_create', {
-#     "pair": 'DOGE_BTC',
-#     "quantity":100,
-#     "price":0.00001,
-#     "type":"sell"
-#     })
-# )
-
-# print(ExmoAPI_instance.api_query('order_cancel', {
-#     "order_id": 3063120293
-#     })
-# )
