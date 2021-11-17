@@ -47,7 +47,6 @@ class Bot:
 							self.create_order(amount_currency, need_price, 'buy')
 		else:
 			orders_buy = []		# Список орденов на покупку	
-
 			for order in orders_pair:
 				if order.get('type') == 'sell':
 					continue
@@ -55,17 +54,21 @@ class Bot:
 					orders_buy.append(order)
 
 			for order_buy in orders_buy:
-				print(orders_buy)
 				id_order = order_buy.get('order_id')
 				
 				if id_order == None:
 					continue
 
-				res = self.token.api_query('order_trades', {'order_id': id_order})
+				try:
+					res = self.token.api_query('order_trades', {'order_id': id_order})
+					# по ордеру уже есть частичное выполнение
+				except ScriptError as e:
+					if 'Error 50304' in str(e):
+						print(u'Частично исполненных ордеров нет')
 
-				time_passed = time.time() - order_buy.get('created')
-				if time_passed > order_life_time * 60:
-					cancel_order(id_order)
+					time_passed = time.time() - order_buy.get('created')
+					if time_passed > order_life_time * 60:
+						cancel_order(id_order)
 
 	def create_order(self, amount, price, type_order):
 		# Округление до 2-х знаков после запятой (ограничение EXMO)
