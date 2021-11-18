@@ -2,8 +2,14 @@ import time
 import logging
 import decimal
 
+class ScriptError(Exception):
+    pass
+
+class ScriptQuitCondition(Exception):
+	pass
+
 class Bot:
-	def __init__(self, token, currency_buy, currency_sell):
+	def __init__(self, token, currency_buy, currency_sell, debug_mode=False):
 		self.token = token
 		self.pair = '{0}_{1}'.format(currency_buy, currency_sell)
 		self.currency_sell = currency_sell
@@ -11,64 +17,84 @@ class Bot:
 		self.balances = {}
 		self.profit = 0.1 / 100
 		self.logger = logging.getLogger('Bot')
+		self.debug_mode = debug_mode
 
 	def trade(self):
-		order_life_time = 3
-		open_orders = self.token.api_query('user_open_orders')
-		orders_pair = open_orders.get(self.pair)
+		try:
+			order_life_time = 3
+			open_orders = self.token.api_query('user_open_orders')
+			orders_pair = open_orders.get(self.pair)
 
-		if orders_pair == None:
-			print(u'Открытых ордеров нет')
-			self.logger.info(u'Открытых ордеров нет')
-			self.update_balance()
+			if orders_pair == None:
+				print(u'Открытых ордеров нет')
+				self.logger.info(u'Открытых ордеров нет')
+				self.update_balance()
 
-			pair_list = self.token.api_query('pair_settings')
-			
-			if pair_list[self.pair] != None:
-				cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))
-				commission_maker_percent = float(pair_list[self.pair].get('commission_maker_percent')) / 100
-
-				if float(self.balances[self.currency_buy]) >= cur_min_quantity:
-					avg_price = self.avg_price_period(self.pair, 3)
-					wanna_get = avg_price + avg_price * (commission_maker_percent + self.profit)
-
-					if wanna_get != 0:
-						# amount_currency = wanna_get / float(self.balances[self.currency_buy])
-						self.create_order(float(self.balances[self.currency_buy]), wanna_get, 'sell')
-
-				if float(self.balances[self.currency_sell]) >= 0:
-					avg_price = self.avg_price_period(self.pair, 3)
-					need_price = avg_price - avg_price * (commission_maker_percent + self.profit)
-					
-					if need_price != 0:
-						amount_currency = float(self.balances[self.currency_sell]) / need_price
-					
-						if amount_currency > cur_min_quantity:
-							self.create_order(amount_currency, need_price, 'buy')
-		else:
-			orders_buy = []		# Список орденов на покупку	
-			for order in orders_pair:
-				if order.get('type') == 'sell':
-					continue
-				elif order.get('type') == 'buy':
-					orders_buy.append(order)
-
-			for order_buy in orders_buy:
-				id_order = order_buy.get('order_id')
+				pair_list = self.token.api_query('pair_settings')
 				
-				if id_order == None:
-					continue
+				if pair_list[self.pair] != None:
+					cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))
+					commission_maker_percent = float(pair_list[self.pair].get('commission_maker_percent')) / 100
 
-				try:
-					res = self.token.api_query('order_trades', {'order_id': id_order})
-					# по ордеру уже есть частичное выполнение
-				except ScriptError as e:
-					if 'Error 50304' in str(e):
-						print(u'Частично исполненных ордеров нет')
+					if float(self.balances[self.currency_buy]) >= cur_min_quantity:
+						avg_price = self.avg_price_period(self.pair, 3)
+						wanna_get = avg_price + avg_price * (commission_maker_percent + self.profit)
 
-					time_passed = time.time() - order_buy.get('created')
-					if time_passed > order_life_time * 60:
-						cancel_order(id_order)
+						if wanna_get != 0:
+							# amount_currency = wanna_get / float(self.balances[self.currency_buy])
+							self.create_order(float(self.balances[self.currency_buy]), wanna_get, 'sell')
+
+					if float(self.balances[self.currency_sell]) >= 0:
+						avg_price = self.avg_price_period(self.pair, 3)
+						need_price = avg_price - avg_price * (commission_maker_percent + self.profit)
+						
+						if need_price != 0:
+							amount_currency = float(self.balances[self.currency_sell]) / need_price
+						
+							if amount_currency > cur_min_quantity:
+								self.create_order(amount_currency, need_price, 'buy')
+			else:
+				orders_buy = []		# Список орденов на покупку	
+				for order in orders_pair:
+					if order.get('type') == 'sell':
+						raise ScriptQuitCondition('Выход, ждем пока не исполнятся/закроются все ордера на продажу')
+					elif order.get('type') == 'buy':
+						orders_buy.append(order)
+
+				for order_buy in orders_buy:
+					id_order = order_buy.get('order_id')
+					
+					if id_order == None:
+						continue
+
+					if self.debug_mode:
+						print('Проверяем отложенный ордер', id_order)
+
+					try:
+						res = self.token.api_query('order_trades', {'order_id': id_order})
+						# по ордеру уже есть частичное выполнение
+						print(res)
+						raise ScriptQuitCondition('Выход, продолжаем докуать валюту по тому курсу, по которому уже купили часть')
+					except ScriptError as e:
+						if 'Error 50304' in str(e):
+							print(u'Частично исполненных ордеров нет')
+
+							time_passed = time.time() - int(order_buy.get('created'))
+							if time_passed > order_life_time * 60:
+								self.cancel_order(id_order)
+								raise ScriptQuitCondition('Отменяем ордер #' + str(id_order))
+							else:
+								raise ScriptQuitCondition('Выход, продолжаем надеяться купить валюту по указанному ранее курсу, со времени создания ордера прошло %s секунд' % str(time_passed))
+						else:
+							raise ScriptQuitCondition(str(e))
+		except ScriptError as e:
+			print(e)
+		except ScriptQuitCondition as e:
+			if self.debug_mode:
+				print(e)
+			pass
+		except Exception as e:
+			print("!!!!",e)
 
 	def create_order(self, amount, price, type_order):
 		# Округление до 2-х знаков после запятой (ограничение EXMO)

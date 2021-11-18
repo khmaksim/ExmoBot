@@ -8,7 +8,7 @@ import time
 import logging
 import threading
 
-from bot import Bot
+from bot import *
 
 secret_key = 'S-f5fb1840951f16f40737d4e01f4b8975a51e1124'
 public_key = 'K-f76caad05d749c91d2e3ec89020cbef7443c9ebd'
@@ -44,14 +44,10 @@ class ExmoAPI:
         try:
             obj = json.loads(response.decode('utf-8'))
             if 'error' in obj and obj['error']:
-                print(obj['error'])
-                raise sys.exit()
+                raise ScriptError(obj['error'])
             return obj
         except json.decoder.JSONDecodeError:
-            print('Error while parsing response:', response)
-            raise sys.exit()
-
-
+            raise ScriptError('Error while parsing response:', response)
 
 # cur2_min_quantity = 
 
@@ -69,8 +65,16 @@ class ExmoAPI:
 # print(ticker)
 
 if __name__ == '__main__':
+    DEBUG = False
+
+    if len(sys.argv) > 1 and 'debug' == sys.argv[1]:
+        DEBUG = True
+        print('Debug mode')
+
     logging.basicConfig(filename='bot.log', filemode='a', format='%(asctime)s, %(name)s %(levelname)s %(message)s', datefmt='%H:%M:%S', level=logging.DEBUG)
     logging.info('Running Crypto Trader')
+    if DEBUG:
+        logging.info('Run with Debug model')
 
     ExmoAPI_instance = ExmoAPI(public_key, secret_key)
     user_info = ExmoAPI_instance.api_query('user_info')
@@ -81,7 +85,8 @@ if __name__ == '__main__':
     currency_sell = 'RUB'
     currency_buy = 'BTC'
 
-    bot = Bot(ExmoAPI_instance, currency_buy, currency_sell)
+    bot = Bot(ExmoAPI_instance, currency_buy, currency_sell, DEBUG)
+
     logging.info('Create Crypto bot')
 
     while True:
