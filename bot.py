@@ -18,6 +18,7 @@ class Bot:
 		self.profit = 0.1 / 100
 		self.logger = logging.getLogger('Bot')
 		self.debug_mode = debug_mode
+		self.last_price_pair = 0
 
 	def trade(self):
 		try:
@@ -25,17 +26,25 @@ class Bot:
 			open_orders = self.token.api_query('user_open_orders')
 			orders_pair = open_orders.get(self.pair)
 
+			self.current_price()
+			return
+
 			if orders_pair == None:
-				print(u'Открытых ордеров нет')
+				if self.debug_mode:
+					print(u'Открытых ордеров нет')
 				self.logger.info(u'Открытых ордеров нет')
+
+				if self.last_price_pair == 0:
+
 
 				pair_list = self.token.api_query('pair_settings')
 				
 				if pair_list[self.pair] != None:
 					self.balance()		# Обновление баланса
-					cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))
+					cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))		# Минимальное количество валюты для покупки/продажи
 					commission_maker_percent = float(pair_list[self.pair].get('commission_maker_percent')) / 100
 
+					# Если валюты больше чем минимальное количество крипты для покупки/продажи
 					if float(self.balances[self.currency_buy]) >= cur_min_quantity:
 						avg_price = self.avg_price_period(self.pair, 3)
 						wanna_get = avg_price + avg_price * (commission_maker_percent + self.profit)
@@ -44,6 +53,7 @@ class Bot:
 							# amount_currency = wanna_get / float(self.balances[self.currency_buy])
 							self.create_order(float(self.balances[self.currency_buy]), wanna_get, 'sell')
 
+					# Если баланс валюты для покупки продажи не нулевой
 					if float(self.balances[self.currency_sell]) >= 0:
 						avg_price = self.avg_price_period(self.pair, 3)
 						need_price = avg_price - avg_price * (commission_maker_percent + self.profit)
@@ -129,6 +139,7 @@ class Bot:
 			if v != '0':
 				print('{0} [{1}]'.format(k, v))
 
+	# Получение средней цены валюты за период времени
 	def avg_price_period(self, pair=None, period=1):
 		if pair == None:
 			pair = self.pair
@@ -147,7 +158,15 @@ class Bot:
 		if n == 0:
 			n = 1
 		
-		return (sum_trade / n)		
+		return (sum_trade / n)
+
+	def current_price(self):
+		tickers = self.token.api_query('ticker')
+
+		if ticker[self.pair] != None:
+			print('Max price', ticker[self.pair]['high'])
+			print('Min price', ticker[self.pair]['low'])
+
 
 
 
