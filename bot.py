@@ -28,11 +28,11 @@ class Bot:
 			if orders_pair == None:
 				print(u'Открытых ордеров нет')
 				self.logger.info(u'Открытых ордеров нет')
-				self.update_balance()
 
 				pair_list = self.token.api_query('pair_settings')
 				
 				if pair_list[self.pair] != None:
+					self.balance()		# Обновление баланса
 					cur_min_quantity = float(pair_list[self.pair].get('min_quantity'))
 					commission_maker_percent = float(pair_list[self.pair].get('commission_maker_percent')) / 100
 
@@ -120,7 +120,8 @@ class Bot:
 			self.logger.info(u'Отменен ордер #{0}'.format(id_order))				
 			print(u'Отменен ордер #{0}'.format(id_order))
 
-	def update_balance(self):
+	# Получение баланса по всем валютам
+	def balance(self):
 		user_info = self.token.api_query('user_info')
 		
 		for k, v in user_info['balances'].items():
